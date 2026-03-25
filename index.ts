@@ -1,91 +1,76 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// Konfigurasi Header CORS agar aplikasi Photobooth tidak diblokir
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': '*', // Izinkan semua header agar tidak rewel
+  'Access-Control-Allow-Headers': '*', // Mengizinkan semua header kustom
 };
 
 serve(async (req) => {
-  // Langsung balas OPTIONS tanpa mikir panjang
+  // 1. Tangani Preflight (PENTING!)
   if (req.method === 'OPTIONS') {
     return new Response(null, { 
-      status: 204, // Status 'No Content' standar untuk OPTIONS
+      status: 204, 
       headers: corsHeaders 
     });
   }
 
   try {
-    // 1. Ambil data harga dari aplikasi Photobooth
-    const { nominal } = await req.json();
+    const body = await req.json();
+    const { nominal, action, order_id } = body;
 
-    if (!nominal) {
-      throw new Error("Nominal pembayaran tidak boleh kosong.");
-    }
+    // Koneksi Supabase
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    );
 
-    // 2. Hubungkan ke Database Supabase VPS Anda
-    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-    const supabase = createClient(supabaseUrl, supabaseKey);
-
-    // 3. Ambil Server Key Midtrans dari tabel 'payment_keys'
-    const { data: keyData, error: dbError } = await supabase
+    const { data: keyData } = await supabase
       .from('payment_keys')
       .select('api_key')
       .eq('type', 'Midtrans')
-      .single(); // Ambil 1 baris saja
+      .single();
 
-    if (dbError || !keyData) {
-      throw new Error("Gagal mengambil kunci Midtrans dari database.");
+    const serverKey = keyData?.api_key;
+    const authString = btoa(`${serverKey}:`);
+
+    // LOGIKA: CEK STATUS (Untuk tombol Manual Check)
+    if (action === 'check_status') {
+      const res = await fetch(`https://api.sandbox.midtrans.com/v2/${order_id}/status`, {
+        headers: { "Authorization": `Basic ${authString}` }
+      });
+      const statusData = await res.json();
+      return new Response(JSON.stringify({ 
+        sukses: true, 
+        payment_status: (statusData.transaction_status === 'settlement') ? 'SUCCESS' : 'PENDING' 
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    const serverKey = keyData.api_key; // Ini berisi "SB-Mid-server-..."
-
-    // 4. Siapkan request ke API Midtrans (Core API Sandbox)
-    // Midtrans mewajibkan Server Key diubah ke format Base64 ditambah titik dua ":"
-    const authString = btoa(`${serverKey}:`);
-    const orderId = `MEMOTO-SESSION-${Date.now()}`; // Buat ID Order unik
-
+    // LOGIKA: GENERATE QRIS
     const midtransRes = await fetch("https://api.sandbox.midtrans.com/v2/charge", {
       method: "POST",
       headers: {
-        "Accept": "application/json",
         "Content-Type": "application/json",
         "Authorization": `Basic ${authString}`
       },
       body: JSON.stringify({
         payment_type: "qris",
-        transaction_details: {
-          order_id: orderId,
-          gross_amount: nominal
-        }
+        transaction_details: { order_id: `MEMOTO-${Date.now()}`, gross_amount: nominal }
       })
     });
 
     const midtransData = await midtransRes.json();
 
-    // Cek jika Midtrans menolak request
-    if (midtransData.status_code !== "201") {
-       throw new Error(`Midtrans Error: ${midtransData.status_message}`);
-    }
-
-    // 5. Kembalikan data QRIS ke Aplikasi Photobooth
     return new Response(
-      JSON.stringify({ 
-        sukses: true, 
-        pesan: "QRIS berhasil dibuat",
-        order_id: orderId,
-        data_midtrans: midtransData 
-      }),
+      JSON.stringify({ sukses: true, data_midtrans: midtransData }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
 
   } catch (error) {
     return new Response(
       JSON.stringify({ sukses: false, pesan: error.message }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400 }
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
