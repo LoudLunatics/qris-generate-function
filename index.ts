@@ -62,6 +62,13 @@ serve(async (req) => {
 
     const midtransData = await midtransRes.json();
 
+    // --- LOGIKA PENGAMAN BARU ---
+    // Midtrans membalas 201 untuk sukses buat QRIS, atau 200 untuk sukses ambil data
+    if (midtransData.status_code !== "201" && midtransData.status_code !== "200") {
+       throw new Error(`Midtrans Error: ${midtransData.status_message}`);
+    }
+    // ----------------------------
+
     return new Response(
       JSON.stringify({ sukses: true, data_midtrans: midtransData }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
