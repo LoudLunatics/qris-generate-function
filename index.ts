@@ -4,11 +4,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': '*', // Mengizinkan semua header kustom
+  'Access-Control-Allow-Headers': '*', 
 };
 
 serve(async (req) => {
-  // 1. Tangani Preflight (PENTING!)
+  // Tangani Preflight (PENTING!)
   if (req.method === 'OPTIONS') {
     return new Response(null, { 
       status: 204, 
@@ -35,20 +35,21 @@ serve(async (req) => {
     const serverKey = keyData?.api_key;
     const authString = btoa(`${serverKey}:`);
 
-    // LOGIKA: CEK STATUS (Untuk tombol Manual Check)
+    // LOGIKA: CEK STATUS (Untuk tombol Manual Check - VERSI PRODUCTION)
     if (action === 'check_status') {
-      const res = await fetch(`https://api.sandbox.midtrans.com/v2/${order_id}/status`, {
+      const res = await fetch(`https://api.midtrans.com/v2/${order_id}/status`, {
         headers: { "Authorization": `Basic ${authString}` }
       });
       const statusData = await res.json();
       return new Response(JSON.stringify({ 
         sukses: true, 
-        payment_status: (statusData.transaction_status === 'settlement') ? 'SUCCESS' : 'PENDING' 
+        payment_status: (statusData.transaction_status === 'settlement' || statusData.transaction_status === 'capture') ? 'SUCCESS' : 'PENDING',
+        gateway_response: statusData
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // LOGIKA: GENERATE QRIS
-    const midtransRes = await fetch("https://api.sandbox.midtrans.com/v2/charge", {
+    // LOGIKA: GENERATE QRIS (VERSI PRODUCTION)
+    const midtransRes = await fetch("https://api.midtrans.com/v2/charge", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -62,12 +63,10 @@ serve(async (req) => {
 
     const midtransData = await midtransRes.json();
 
-    // --- LOGIKA PENGAMAN BARU ---
-    // Midtrans membalas 201 untuk sukses buat QRIS, atau 200 untuk sukses ambil data
+    // REM OTOMATIS: Jika Midtrans gagal buat QRIS, langsung lemparkan error
     if (midtransData.status_code !== "201" && midtransData.status_code !== "200") {
-       throw new Error(`Midtrans Error: ${midtransData.status_message}`);
+       throw new Error(midtransData.status_message || "Gagal membuat QRIS dari Midtrans");
     }
-    // ----------------------------
 
     return new Response(
       JSON.stringify({ sukses: true, data_midtrans: midtransData }),
